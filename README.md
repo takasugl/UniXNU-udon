@@ -18,7 +18,7 @@
 > (PHK110, Udon, SM8475). The final home screen is not reached yet.
 
 Device repository for the OnePlus Ace 2 / 11R. It pairs with
-[`uefi-udon`](../../uefi-udon) and follows the layout of
+[`uefi-udon`](https://github.com/takasugl/uefi-udon) and follows the layout of
 [`UniXNU-tb128fu`](https://github.com/xVanTuring/UniXNU-tb128fu) and
 [`UniXNU-sheng`](https://github.com/UniXNU/UniXNU-sheng).
 
@@ -71,7 +71,7 @@ This repository contains the device-side sources only:
 | `docs/` | Status and dated bring-up record |
 
 Firmware changes live in the companion
-[`uefi-udon`](../../uefi-udon) repository.
+[`uefi-udon`](https://github.com/takasugl/uefi-udon) repository.
 
 ## Build
 
