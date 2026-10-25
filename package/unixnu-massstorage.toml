@@ -1,0 +1,14 @@
+version = 1
+
+[boot]
+timeout = 0
+default = "massstorage"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "massstorage"
+title = "Udon UFS Mass Storage"
+type = "efi"
+path = "Payloads/MassStorage.efi"

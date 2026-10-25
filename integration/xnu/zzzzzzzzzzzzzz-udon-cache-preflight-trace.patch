@@ -1,0 +1,298 @@
+diff --git a/bsd/kern/kern_descrip.c b/bsd/kern/kern_descrip.c
+index c966085..1a1ab86 100644
+--- a/bsd/kern/kern_descrip.c
++++ b/bsd/kern/kern_descrip.c
+@@ -2624,10 +2624,32 @@ sys_fnctl_parse_arg(proc_t p, user_long_t arg)
+ 	return proc_is64bit(p) ? arg : CAST_USER_ADDR_T((uint32_t)arg);
+ }
+ 
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++extern volatile int udon_cache_trace_pid;
++extern volatile int udon_cache_trace_fd;
++extern volatile int udon_cache_trace_stage;
++extern volatile int udon_cache_trace_fcntl_ret;
++extern volatile int udon_cache_trace_fcntl_error;
++
++static void
++udon_cache_trace_fcntl_result(proc_t p, int fd, int error)
++{
++	if (udon_cache_trace_stage == 4 && udon_cache_trace_pid == proc_getpid(p) &&
++	    udon_cache_trace_fd == fd) {
++		udon_cache_trace_fcntl_error = error;
++		udon_cache_trace_fcntl_ret = error ? 0 : -1;
++		udon_cache_trace_stage = error ? 0x105 : 5;
++	}
++}
++#endif
++
+ /* cleanup code common to fnctl functions, for when the fdlock is still held */
+ static int
+ sys_fcntl_out(proc_t p, int fd, struct fileproc *fp, int error)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	udon_cache_trace_fcntl_result(p, fd, error);
++#endif
+ 	fp_drop(p, fd, fp, 1);
+ 	proc_fdunlock(p);
+ 	return error;
+@@ -2639,6 +2661,9 @@ sys_fcntl_outdrop(proc_t p, int fd, struct fileproc *fp, struct vnode *vp, int e
+ {
+ #pragma unused(vp)
+ 
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	udon_cache_trace_fcntl_result(p, fd, error);
++#endif
+ 	AUDIT_ARG(vnpath_withref, vp, ARG_VNODE1);
+ 	fp_drop(p, fd, fp, 0);
+ 	return error;
+@@ -2764,8 +2789,23 @@ sys_fcntl_nocancel(proc_t p, struct fcntl_nocancel_args *uap, int32_t *retval)
+ 	AUDIT_ARG(fd, uap->fd);
+ 	AUDIT_ARG(cmd, uap->cmd);
+ 
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	int udon_cache_probe = udon_cache_trace_pid == proc_getpid(p) &&
++	    udon_cache_trace_fd == fd && cmd == F_ADDFILESIGS_RETURN;
++	if (udon_cache_probe) {
++		udon_cache_trace_stage = 4;
++	}
++#endif
++
+ 	proc_fdlock(p);
+ 	if ((error = fp_lookup(p, fd, &fp, 1))) {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++		if (udon_cache_probe) {
++			udon_cache_trace_fcntl_error = error;
++			udon_cache_trace_fcntl_ret = 0;
++			udon_cache_trace_stage = 0x104;
++		}
++#endif
+ 		proc_fdunlock(p);
+ 		return error;
+ 	}
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index eb51b67..283845e 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -190,6 +190,20 @@
+ 
+ extern boolean_t vm_darkwake_mode;
+ 
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++volatile int udon_cache_trace_pid = 0;
++volatile int udon_cache_trace_fd = -1;
++volatile int udon_cache_trace_stage = 0;
++volatile int udon_cache_trace_error = 0;
++volatile user_ssize_t udon_cache_trace_pread_ret = 0;
++volatile int udon_cache_trace_fcntl_ret = 0;
++volatile int udon_cache_trace_fcntl_error = 0;
++volatile uint64_t udon_cache_trace_mmap_addr = 0;
++volatile int udon_cache_trace_mmap_error = 0;
++volatile uint64_t udon_cache_trace_check_start = 0;
++volatile int udon_cache_trace_check_ret = -1;
++#endif
++
+ /* enable crash reports on various exec failures */
+ static TUNABLE(bool, bootarg_execfailurereports, "execfailurecrashes", false);
+ 
+diff --git a/bsd/kern/kern_mman.c b/bsd/kern/kern_mman.c
+index 7238dd8..7570e54 100644
+--- a/bsd/kern/kern_mman.c
++++ b/bsd/kern/kern_mman.c
+@@ -177,6 +177,18 @@ proc_2020_fall_os_sdk_or_later(void)
+ int
+ mmap(proc_t p, struct mmap_args *uap, user_addr_t *retval)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	extern volatile int udon_cache_trace_pid;
++	extern volatile int udon_cache_trace_fd;
++	extern volatile int udon_cache_trace_stage;
++	extern volatile uint64_t udon_cache_trace_mmap_addr;
++	extern volatile int udon_cache_trace_mmap_error;
++	boolean_t udon_cache_probe = udon_cache_trace_pid == proc_getpid(p) &&
++	    udon_cache_trace_fd == uap->fd && uap->len == 4096 * 4 && uap->pos == 0;
++	if (udon_cache_probe) {
++		udon_cache_trace_stage = 6;
++	}
++#endif
+ 	/*
+ 	 *	Map in special device (must be SHARED) or file
+ 	 */
+@@ -957,6 +969,13 @@ map_file_retry:
+ 		break;
+ 	}
+ bad:
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	if (udon_cache_probe) {
++		udon_cache_trace_mmap_error = error;
++		udon_cache_trace_mmap_addr = error ? 0 : (uint64_t)*retval;
++		udon_cache_trace_stage = error ? 0x107 : 7;
++	}
++#endif
+ 	if (pager != MEMORY_OBJECT_NULL) {
+ 		/*
+ 		 * Release the reference on the pager.
+diff --git a/bsd/kern/sys_generic.c b/bsd/kern/sys_generic.c
+index f229fc1..af98ff2 100644
+--- a/bsd/kern/sys_generic.c
++++ b/bsd/kern/sys_generic.c
+@@ -395,11 +395,33 @@ read(struct proc *p, struct read_args *uap, user_ssize_t *retval)
+ int
+ pread_nocancel(struct proc *p, struct pread_nocancel_args *uap, user_ssize_t *retval)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	extern volatile int udon_cache_trace_pid;
++	extern volatile int udon_cache_trace_fd;
++	extern volatile int udon_cache_trace_stage;
++	extern volatile int udon_cache_trace_error;
++	extern volatile user_ssize_t udon_cache_trace_pread_ret;
++	int udon_cache_probe = udon_cache_trace_pid == proc_getpid(p) &&
++	    uap->fd == udon_cache_trace_fd && uap->nbyte == 4096 * 4 &&
++	    uap->offset == 0;
++	if (udon_cache_probe) {
++		udon_cache_trace_stage = 2;
++	}
++#endif
+ 	KERNEL_DEBUG_CONSTANT((BSDDBG_CODE(DBG_BSD_SC_EXTENDED_INFO, SYS_pread) | DBG_FUNC_NONE),
+ 	    uap->fd, uap->nbyte, (unsigned int)((uap->offset >> 32)), (unsigned int)(uap->offset), 0);
+ 
+-	return read_internal(p, uap->fd, uap->buf, uap->nbyte, uap->offset,
++	int error = read_internal(p, uap->fd, uap->buf, uap->nbyte, uap->offset,
+ 	           FOF_OFFSET, retval);
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	if (udon_cache_probe) {
++		udon_cache_trace_error = error;
++		udon_cache_trace_pread_ret = *retval;
++		udon_cache_trace_stage = error ? 0x102 :
++		    (*retval == 4096 * 4 ? 3 : 0x103);
++	}
++#endif
++	return error;
+ }
+ 
+ /*
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+index ee88026..8879dfe 100644
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -5156,6 +5156,22 @@ static int udon_path_interesting(const char *h)
+ 	}
+ 	return 0;
+ }
++
++static int
++udon_cache_path(const char *h)
++{
++	const char *needle = "dyld_shared_cache_arm64";
++	const char *a, *b;
++
++	for (; *h; ++h) {
++		for (a = h, b = needle; *a && *b && *a == *b; ++a, ++b) {
++		}
++		if (!*b) {
++			return 1;
++		}
++	}
++	return 0;
++}
+ #endif
+ 
+ int
+@@ -5185,6 +5201,9 @@ openat_nocancel(__unused proc_t p, struct openat_nocancel_args *uap,
+     int32_t *retval)
+ {
+ #if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	extern volatile int udon_cache_trace_pid;
++	extern volatile int udon_cache_trace_fd;
++	extern volatile int udon_cache_trace_stage;
+ 	{
+ 		char udon_path[96];
+ 		size_t udon_len = 0;
+@@ -5198,8 +5217,29 @@ openat_nocancel(__unused proc_t p, struct openat_nocancel_args *uap,
+ 		}
+ 	}
+ #endif
+-	return openat_internal(vfs_context_current(), uap->path, uap->flags,
++	int udon_error = openat_internal(vfs_context_current(), uap->path, uap->flags,
+ 	           uap->mode, uap->fd, UIO_USERSPACE, retval);
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_path[96];
++		size_t udon_len = 0;
++		if (copyinstr(uap->path, udon_path, sizeof(udon_path) - 1, &udon_len) == 0) {
++			udon_path[sizeof(udon_path) - 1] = 0;
++			if (udon_path_interesting(udon_path)) {
++				char udon_buf[144];
++				snprintf(udon_buf, sizeof(udon_buf), "openat ret=%d fd=%d %.70s",
++				    udon_error, uap->fd, udon_path);
++				boot_progress_stage(udon_buf);
++				if (udon_error == 0 && udon_cache_path(udon_path)) {
++					udon_cache_trace_pid = proc_getpid(p);
++					udon_cache_trace_fd = *retval;
++					udon_cache_trace_stage = 1;
++				}
++			}
++		}
++	}
++#endif
++	return udon_error;
+ }
+ 
+ int
+diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+index dcebcb8..339a689 100644
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -2095,6 +2095,16 @@ shared_region_check_np(
+ 	struct shared_region_check_np_args      *uap,
+ 	__unused int                            *retvalp)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	extern volatile int udon_cache_trace_pid;
++	extern volatile int udon_cache_trace_stage;
++	extern volatile uint64_t udon_cache_trace_check_start;
++	extern volatile int udon_cache_trace_check_ret;
++	if (proc_getpid(p) == udon_cache_trace_pid) {
++		udon_cache_trace_stage = 9;
++		udon_cache_trace_check_start = uap->start_address;
++	}
++#endif
+ 	vm_shared_region_t      shared_region;
+ 	mach_vm_offset_t        start_address = 0;
+ 	int                     error = 0;
+@@ -2113,6 +2123,12 @@ shared_region_check_np(
+ 	 */
+ 	if (uap->start_address == (task_get_64bit_addr(task) ? DYLD_VM_END_MWL : (uint32_t)DYLD_VM_END_MWL)) {
+ 		p->p_disallow_map_with_linking = TRUE;
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++		if (proc_getpid(p) == udon_cache_trace_pid) {
++			udon_cache_trace_stage = 0x109;
++			udon_cache_trace_check_ret = 0;
++		}
++#endif
+ 		return 0;
+ 	}
+ 
+@@ -2185,6 +2201,12 @@ shared_region_check_np(
+ 		proc_getpid(p), p->p_comm,
+ 		(uint64_t)uap->start_address, (uint64_t)start_address, error));
+ 
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	if (proc_getpid(p) == udon_cache_trace_pid) {
++		udon_cache_trace_stage = error ? 0x10a : 10;
++		udon_cache_trace_check_ret = error;
++	}
++#endif
+ 	return error;
+ }
+ 
+@@ -3077,6 +3099,10 @@ shared_region_map_and_slide_2_np(
+ 
+ 	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
+ done:
++	if (proc_getpid(p) == 1 && kr != KERN_SUCCESS) {
++		panic("UDON shared map files=%u mappings=%u kr=%d",
++		    files_count, mappings_count, kr);
++	}
+ 	kfree_data(shared_files, files_count * sizeof(shared_files[0]));
+ 	kfree_data(mappings, mappings_count * sizeof(mappings[0]));
+ 	return kr;

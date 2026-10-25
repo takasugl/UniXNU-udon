@@ -1,0 +1,65 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5126,6 +5126,17 @@
+ {
+ 	struct __mac_execve_args muap;
+ 	int err;
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_path[120];
++		size_t udon_len = 0;
++		if (copyinstr(uap->fname, udon_path, sizeof(udon_path), &udon_len) == 0) {
++			char udon_buf[140];
++			snprintf(udon_buf, sizeof(udon_buf), "exec %s", udon_path);
++			boot_progress_stage(udon_buf);
++		}
++	}
++#endif
+ 
+ 	memoryshot(VM_EXECVE, DBG_FUNC_NONE);
+ 
+@@ -5134,6 +5145,13 @@
+ 	muap.envp = uap->envp;
+ 	muap.mac_p = USER_ADDR_NULL;
+ 	err = __mac_execve(p, &muap, retval);
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	if (err) {
++		char udon_buf[64];
++		snprintf(udon_buf, sizeof(udon_buf), "exec fail %d", err);
++		boot_progress_stage(udon_buf);
++	}
++#endif
+ 
+ 	return err;
+ }
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -71,6 +71,7 @@
+  * Version 2.0.
+  */
+ 
++#include <kern/boot_progress.h>
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/namei.h>
+@@ -389,6 +390,18 @@
+ mount(proc_t p, struct mount_args *uap, __unused int32_t *retval)
+ {
+ 	struct __mac_mount_args muap;
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_type[32], udon_path[120];
++		size_t udon_len = 0;
++		if (copyinstr(uap->type, udon_type, sizeof(udon_type), &udon_len) == 0 &&
++		    copyinstr(uap->path, udon_path, sizeof(udon_path), &udon_len) == 0) {
++			char udon_buf[160];
++			snprintf(udon_buf, sizeof(udon_buf), "mount %s on %s", udon_type, udon_path);
++			boot_progress_stage(udon_buf);
++		}
++	}
++#endif
+ 
+ 	muap.type = uap->type;
+ 	muap.path = uap->path;

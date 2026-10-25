@@ -1,0 +1,10 @@
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -3078,3 +3078,6 @@ shared_region_map_and_slide_2_np(
+ 	kr = _shared_region_map_and_slide(p, files_count, shared_files, mappings_count, mappings);
+ done:
++	if (proc_getpid(p) == 1 && kr != KERN_SUCCESS) {
++		panic("UDON shared map files=%u mappings=%u kr=%d",
++		    files_count, mappings_count, kr);
++	}
+ 	kfree_data(shared_files, files_count * sizeof(shared_files[0]));

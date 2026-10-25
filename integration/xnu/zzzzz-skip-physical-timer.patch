@@ -1,0 +1,13 @@
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 2056712..dfb156c 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2394,7 +2394,7 @@ _enable_virtual_timer(void)
+ 
+ 	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
+ 	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+-	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++	/* The physical timer is not accessible at EL1 on this non-Apple platform; skip the precaution. */
+ }
+ 
+ void

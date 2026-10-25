@@ -1,0 +1,175 @@
+# Board description of the OnePlus Ace 2 / 11R (PHK110, Udon, SM8475).
+
+[board]
+name = "udon"
+soc = "SM8475"
+description = "OnePlus Ace 2 (PHK110)"
+kit = "udon"                      # the package/ of this repository appears as kits/udon in the build tree
+
+# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image. Give --ipsw PATH to use a local file; without
+# it the remote url is read with range requests, only the members that are needed.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]   # the small components
+
+[ipsw.sha256]
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
+# first_lba and last_lba are the GPT entry "userdata" of LUN 0, read from the tablet.
+[userdata]
+first_lba = 0x3952ec
+last_lba = 0x3aaa3fa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "udon_defconfig"
+# Archive builders of the kernel step, in order. Each is a script of the build tree with its arguments. The VerifiedRoot
+# and VirtIO verified bundles are not built here; they need the volume policies of the target image.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeUfs",
+  "build-udon-ufs-bindings.py",
+  "build-arm-driver.py NativeRamBlock",
+  "build-arm-driver.py NativeAES",
+  "build-udon-probe-stubs.py",
+  "build-native-aes-bindings.py",
+  "build-udon-platform-power.py",
+  "build-libpthread-kernel.py",
+]
+
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+slide = "-0x1000000"
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
+[firmware]
+config = "udon"                   # Resources/Configs/udon.toml in the uefi-udon checkout (--uefi)
+dsc = "Platforms/OnePlus/udonPkg/udon.dsc"
+fd = "Build/udonPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = []
+submodules = []
+patches = []
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/OnePlus",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/OnePlus",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "0"
+DEVICE_MODEL = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "udon-research"
+
+# The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and
+# the optional trust cache and Data seed. The loader (DarwinBoot) is part of the firmware volume.
+[payload]
+volume = "UDONESP"
+size_mib = 96
+loader = "firmware"
+title = "udon first boot: source 4K XNU to console"
+dram_size = "0xC0000000"
+panic_screen = true
+# The original static/System trust caches of the iPad7,1 17.7.11 target image.
+trust_cache_sha256 = [
+  "c9e50d678793ecaf8329ce022856c23c27775333181becb130c73ea93f376d17",
+  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+]
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "-no_slto_panic",
+  "offline-legacy-gop=1",
+  "sheng-pmgr=2",
+  "native-ufs-root=1",
+  "boot-progress=2",
+  "boot-profile=0",
+  "boot-diag-resume=5",
+  "boot-ui-focus=ReportCrash",
+  "boot-ui-focus3=powerd",
+  "sheng-build-tag=native-data-010",
+  "sheng-disable-watchdogd=1",
+  "sheng-log=1",
+  "sheng-autoreset=180",
+]
+
+[payload.adt]
+tool = "scripts/make-udon-adt.py"
+chip_id = "207"
+owned_memory_size = "0x130000000"
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x600,0x700"
+packed_data_ramdisk = false
+ipad_identity = true
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+unique_chip_id = "required"          # the platform seed is not stored in any repository
+
+# Image parameters come from the Mu-Silicium device config; [bootimg.image] would override them.
+
+# The stock ABL powers the panel off when the device tree has no splash region, so add it.
+[[bootimg.dtb_node]]
+path = "/reserved-memory/splash_region"
+props = [
+  { name = "label", type = "s", value = "cont_splash_region" },
+  { name = "reg", type = "x", value = ["0x0", "0xb8000000", "0x0", "0x2b00000"] },
+]

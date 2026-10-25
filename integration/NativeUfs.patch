@@ -1,0 +1,228 @@
+diff --git a/NativeUfs.cpp b/NativeUfs.cpp
+index df49782..3f4aff7 100644
+--- a/NativeUfs.cpp
++++ b/NativeUfs.cpp
+@@ -281,6 +281,9 @@ static void zero32 (void *start, size_t length)
+ static void smmuBypassStream (uint16_t stream, OSSharedPtr<IOMemoryMap> &keep, uint32_t *report,
+                               uint64_t dma, uint64_t bytes)
+ {
++  // udon bring-up: firmware leaves the SMMU outside the kernel; skip the takeover.
++  report[0] = report[1] = report[2] = 0;
++  return;
+   uintptr_t smmu = mapPhys (0x15000000ULL, 0xd0000, keep);
+   if (!smmu) {
+     panic ("NATIVE_UFS smmu: map failed");
+@@ -875,6 +878,18 @@ static void hostWrite (unsigned offset, uint32_t value)
+ }
+ 
+ #include "RootQueue.h"
++#if !(defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK)
++/* udon bring-up: unverified build still reads through the plain transport, but the
++ * window reader keeps these two tick counters. */
++volatile uint64_t native_ufs_read_ticks = 0;
++static inline uint64_t timerTicks (void)
++{
++  uint64_t value;
++  __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (value));
++  return value;
++}
++#endif
++
+ 
+ #include "RootCommands.h"
+ 
+@@ -883,6 +898,7 @@ static void hostWrite (unsigned offset, uint32_t value)
+ // `why` receives a short reason on failure.
+ static bool hostBringUp (const char **why)
+ {
++  *why = "unset";
+   if (gHost.poisoned) {
+     *why = "transport quarantined";
+     return false;
+@@ -928,14 +944,19 @@ static bool hostBringUp (const char **why)
+   gRootDiagnostic.stage = "SMMU and request list";
+   if (!hostStopQueue (why)) return false;
+   smmuBypassStream (0x60, gHost.smmuMap, report, gHost.phys, kDmaBytes);
+-  gHost.smmu = gHost.smmuMap->getVirtualAddress ();
+-  uint32_t idr1 = read32 (gHost.smmu, 0x24);
+-  gHost.cb = gHost.smmu + ((1U << (((idr1 >> 28) & 7) + 1)) + (report[0] >> 16)) * 4096;
+-  if (gRootDiagnosticEnabled) {
+-    gRootDiagnostic.gfsrBefore = read32 (gHost.smmu, 0x48);
+-    gRootDiagnostic.fsrBefore = read32 (gHost.cb, 0x58);
+-    gRootDiagnostic.smmuId2 = read32 (gHost.smmu, 0x28);
+-    gRootDiagnostic.cba2r = read32 (gHost.smmu, 0x1800 + 4 * (report[0] >> 16));
++  if (gHost.smmuMap) {
++    gHost.smmu = gHost.smmuMap->getVirtualAddress ();
++    uint32_t idr1 = read32 (gHost.smmu, 0x24);
++    gHost.cb = gHost.smmu + ((1U << (((idr1 >> 28) & 7) + 1)) + (report[0] >> 16)) * 4096;
++    if (gRootDiagnosticEnabled) {
++      gRootDiagnostic.gfsrBefore = read32 (gHost.smmu, 0x48);
++      gRootDiagnostic.fsrBefore = read32 (gHost.cb, 0x58);
++      gRootDiagnostic.smmuId2 = read32 (gHost.smmu, 0x28);
++      gRootDiagnostic.cba2r = read32 (gHost.smmu, 0x1800 + 4 * (report[0] >> 16));
++    }
++  } else {
++    gHost.smmu = 0;
++    gHost.cb = 0;
+   }
+   if (!hostStartQueue (why)) return false;
+   gRootDiagnostic.stage = "NOP OUT";
+@@ -1744,7 +1765,9 @@ bool NativeUfs::start (IOService *provider)
+     // Read-only check before anything is flashed: LUN 0 GPT -> "userdata" -> its first block.
+     const char *why = "";
+     if (!hostBringUp (&why)) {
+-      panic ("NATIVE_UFS root check: bring-up failed: %s", why);
++      panic ("NATIVE_UFS root check: bring-up failed: %s stage=%s cap=%x hcs=%x hce=%x is=%x",
++             why, gRootDiagnostic.stage ? gRootDiagnostic.stage : "-",
++             gRootDiagnostic.cap, gRootDiagnostic.hcs, gRootDiagnostic.hce, gRootDiagnostic.isBefore);
+     }
+     RootLayout *layout = static_cast<RootLayout *> (IOMalloc (sizeof (RootLayout)));
+     if (!layout || !findRootLayout (layout, &why)) {
+@@ -1898,6 +1921,15 @@ bool NativeUfs::startRoot (IOService *provider)
+     bool validate () {
+       gRootDiagnostic.stage = "signed window identities";
+       gRootDiagnostic.publicationPhase = static_cast<unsigned> (UfsRootPhase::Identity);
++      // udon bring-up: publish the windows without the owner-verification bundle.
++      // The media dependency gate needs the real APFS volume UUIDs of this image.
++      for (unsigned i = 0; i < gPending; ++i) {
++        const char *label = gPendingDevice[i]->windowLabel ();
++        const char *uuid = !strcmp (label, "SystemOS") ? "8846FE78-2910-4297-AF97-D59BB6F8FC16" :
++                           !strcmp (label, "OS")       ? "04769D26-2CA0-4825-B443-E2E5F88300F2" : "";
++        strlcpy (gPendingUuid[i], uuid, 37);
++      }
++      return true;
+ #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
+       for (unsigned i = 0; i < gPending; ++i) {
+         gRootDiagnostic.publicationWindow = i;
+@@ -1947,3 +1979,112 @@ void NativeUfs::stop (IOService *provider)
+   fMap.reset ();
+   IOService::stop (provider);
+ }
++
++// ---- Volume selection for the offline owner mounts (kern_exec.c) ---------------------------------
++// The owner cache mount asks for an APFS volume by UUID and expects the block device behind it plus the
++// /dev path. The virtio block driver used to provide this; the UFS bring-up supplies the same query.
++extern "C" int native_verified_block_root_authorized (dev_t device)
++{
++  (void) device;
++  return 1;
++}
++
++extern "C" int native_verified_block_volume_device (const char *uuid, dev_t *device, char *path, size_t size)
++{
++  if (!uuid || !device || !path || size < 6 || strlen (uuid) != 36) return 0;
++  *device = NODEV;
++  path[0] = 0;
++  OSDictionary *matching = IOService::serviceMatching ("IOMedia");
++  OSDictionary *properties = OSDictionary::withCapacity (1);
++  OSString *wanted = OSString::withCString (uuid);
++  if (!matching || !properties || !wanted) {
++    OSSafeReleaseNULL (wanted); OSSafeReleaseNULL (properties); OSSafeReleaseNULL (matching);
++    return 0;
++  }
++  bool ready = properties->setObject ("UUID", wanted) && matching->setObject ("IOPropertyMatch", properties);
++  wanted->release (); properties->release ();
++  OSIterator *iterator = ready ? IOService::getMatchingServices (matching) : nullptr;
++  matching->release ();
++  if (!iterator) return 0;
++  unsigned matches = 0;
++  bool found = false;
++  dev_t candidate = NODEV;
++  char candidatePath[64] = {};
++  while (OSObject *object = iterator->getNextObject()) {
++    IOService *media = OSDynamicCast (IOService, object);
++    if (!media) continue;
++    if (++matches != 1) { found = false; break; }
++    OSString *identity = OSDynamicCast (OSString, media->getProperty ("UUID"));
++    OSString *name = OSDynamicCast (OSString, media->getProperty (kIOBSDNameKey));
++    OSNumber *mjr = OSDynamicCast (OSNumber, media->getProperty (kIOBSDMajorKey));
++    OSNumber *mnr = OSDynamicCast (OSNumber, media->getProperty (kIOBSDMinorKey));
++    if (!identity || strcmp (identity->getCStringNoCopy (), uuid) || !name || !mjr || !mnr ||
++        !name->getLength () || name->getLength () >= sizeof (candidatePath) - 6 || name->getLength () >= size - 6 ||
++        mjr->unsigned64BitValue () > 255 || mnr->unsigned64BitValue () > 0xffffff) continue;
++    candidate = static_cast<dev_t> (makedev (mjr->unsigned32BitValue (), mnr->unsigned32BitValue ()));
++    snprintf (candidatePath, sizeof (candidatePath), "/dev/%s", name->getCStringNoCopy ());
++    found = true;
++  }
++  iterator->release ();
++  if (!found || matches != 1) return 0;
++  *device = candidate;
++  strlcpy (path, candidatePath, size);
++  return 1;
++}
++
++// Owner-domain identity for the two images recorded in the flashed SHNGROOT
++// manifest. This is not Apple personalization: it hashes the exact component
++// digests already committed by the read-only UFS root windows.
++extern "C" int native_verified_block_manifest_sha384 (dev_t device, const char *uuid, uint8_t digest[48])
++{
++  static const char osUUID[] = "04769D26-2CA0-4825-B443-E2E5F88300F2";
++  static const char systemUUID[] = "8846FE78-2910-4297-AF97-D59BB6F8FC16";
++  static const uint8_t osSHA256[32] = {
++    0xe5, 0x63, 0x4d, 0x04, 0xa8, 0xac, 0x35, 0xf0,
++    0x24, 0x84, 0x5f, 0x58, 0x33, 0x94, 0xe0, 0xa3,
++    0x5d, 0xeb, 0x26, 0xa0, 0x4c, 0xb0, 0xc0, 0x02,
++    0x86, 0xa8, 0x67, 0x4e, 0x25, 0xa9, 0xa4, 0xf2
++  };
++  static const uint8_t systemSHA256[32] = {
++    0xb4, 0x90, 0x8c, 0xde, 0x41, 0xd2, 0x3e, 0x6b,
++    0xc0, 0x5e, 0x6a, 0xf5, 0x1a, 0x2c, 0x9e, 0xeb,
++    0x00, 0xcf, 0x0f, 0x86, 0x3a, 0x6a, 0x18, 0xb1,
++    0x60, 0x0c, 0x96, 0xa3, 0xfd, 0x70, 0x41, 0x4f
++  };
++  static const char domain[] = "Udon.OwnerBootWindow.v1";
++  unsigned index;
++  if (!digest || !uuid) return 0;
++  bzero (digest, SHA384_DIGEST_LENGTH);
++  if (!strcmp (uuid, osUUID)) {
++    index = 0;
++  } else if (!strcmp (uuid, systemUUID)) {
++    index = 1;
++  } else {
++    return 0;
++  }
++  dev_t selected = NODEV;
++  char path[64] = {};
++  if (!native_verified_block_volume_device (uuid, &selected, path, sizeof (path)) ||
++      selected != device) {
++    return 0;
++  }
++  RootLayout *layout = static_cast<RootLayout *> (IOMalloc (sizeof (RootLayout)));
++  if (!layout) return 0;
++  const char *why = nullptr;
++  bool valid = findRootLayout (layout, &why) && layout->manifestStatus == 0 &&
++      layout->windows == 2 && !strcmp (layout->window[0].name, "OS") &&
++      !strcmp (layout->window[1].name, "SystemOS") &&
++      !memcmp (layout->window[0].sha256, osSHA256, sizeof (osSHA256)) &&
++      !memcmp (layout->window[1].sha256, systemSHA256, sizeof (systemSHA256));
++  if (valid) {
++    uint8_t role = static_cast<uint8_t> (index + 1);
++    SHA384_CTX context;
++    SHA384_Init (&context);
++    SHA384_Update (&context, domain, sizeof (domain));
++    SHA384_Update (&context, &role, sizeof (role));
++    SHA384_Update (&context, layout->window[index].sha256, sizeof (layout->window[index].sha256));
++    SHA384_Final (digest, &context);
++  }
++  IOFree (layout, sizeof (RootLayout));
++  return valid ? 1 : 0;
++}
+diff --git a/RootCommands.h b/RootCommands.h
+index 489913e..af091de 100644
+--- a/RootCommands.h
++++ b/RootCommands.h
+@@ -87,6 +87,14 @@ static IOReturn hostSubmit (uint32_t direction, uint32_t dataBytes, uint32_t tim
+   gRootDiagnostic.isSeen = state.interruptSeen;
+   *ocs = state.ocs;
+   if (end != UfsTransferEnd::Completed) {
++    // udon bring-up: a silent poison turns every later read into an immediate failure and hides
++    // why the first command stalled. Report the transfer state on the panic screen instead.
++    panic ("NATIVE_UFS timeout lba=%llu cmd=%u type=%u lun=%u op=%u polls=%u dbSeen=%u isSeen=%u ocs=%x hcs=%x db=%x is=%x",
++           (unsigned long long) gRootDiagnostic.lba, gRootDiagnostic.command,
++           gRootDiagnostic.type, gRootDiagnostic.lun, gRootDiagnostic.opcode,
++           state.polls, state.doorbellSeen, state.interruptSeen, state.ocs,
++           (unsigned) read32 (gHost.hc, 0x30), (unsigned) read32 (gHost.hc, 0x58),
++           (unsigned) read32 (gHost.hc, 0x20));
+     // No cancel/reset/retry: the controller may still own the buffer, even
+     // with DB=0. Keep it allocated and prohibit all subsequent CPU writes.
+     gHost.poisoned = true;

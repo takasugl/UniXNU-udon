@@ -1,0 +1,197 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7426,6 +7426,21 @@
+ 	/*
+ 	 * Set up argument block for fake call to execve.
+ 	 */
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_env[128] = "(null envp)";
++		size_t udon_env_len = 0;
++		if (envp != USER_ADDR_NULL) {
++			udon_env[0] = 0;
++			if (copyinstr(envp, udon_env, sizeof(udon_env) - 1, &udon_env_len) != 0) {
++				strlcpy(udon_env, "(copyinstr failed)", sizeof(udon_env));
++			}
++		}
++		char udon_stage[176];
++		snprintf(udon_stage, sizeof(udon_stage), "init exec %.40s env=%.110s", path, udon_env);
++		boot_progress_stage(udon_stage);
++	}
++#endif
+ 	init_exec_args.fname = argv0;
+ 	init_exec_args.argp = scratch_addr;
+ 	init_exec_args.envp = envp;
+@@ -7497,6 +7512,14 @@
+ 	int cache_error = native_owner_cache_prepare(p, (user_addr_t)scratch_addr, &init_envp);
+ 	boot_progress_stage("SystemOS mount returned");
+ 	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_stage[96];
++		snprintf(udon_stage, sizeof(udon_stage), "SystemOS cache stage=%d err=%d env=%d",
++		    native_owner_cache_stage, cache_error, init_envp != USER_ADDR_NULL);
++		boot_progress_stage(udon_stage);
++	}
++#endif
+ #endif
+ #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
+ 	boot_progress_stage("Data mount enter");
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -5139,12 +5139,43 @@
+ {
+ 	__pthread_testcancel(1);
+ 	return open_nocancel(p, (struct open_nocancel_args *)uap, retval);
++}
++
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++static int udon_path_interesting(const char *h)
++{
++	static const char * const needles[3] = {"dyld", "Cryptex", "preboot"};
++	for (unsigned n = 0; n < 3; ++n) {
++		const char *a, *b;
++		for (; *h; ++h) {
++			for (a = h, b = needles[n]; *a && *b && *a == *b; ++a, ++b) {}
++			if (!*b) {
++				return 1;
++			}
++		}
++	}
++	return 0;
+ }
++#endif
+ 
+ int
+ open_nocancel(__unused proc_t p, struct open_nocancel_args *uap,
+     int32_t *retval)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_path[96];
++		size_t udon_len = 0;
++		if (copyinstr(uap->path, udon_path, sizeof(udon_path) - 1, &udon_len) == 0) {
++			udon_path[sizeof(udon_path) - 1] = 0;
++			if (udon_path_interesting(udon_path)) {
++				char udon_buf[128];
++				snprintf(udon_buf, sizeof(udon_buf), "open %.90s", udon_path);
++				boot_progress_stage(udon_buf);
++			}
++		}
++	}
++#endif
+ 	return openat_internal(vfs_context_current(), uap->path, uap->flags,
+ 	           uap->mode, AT_FDCWD, UIO_USERSPACE, retval);
+ }
+@@ -5153,6 +5184,20 @@
+ openat_nocancel(__unused proc_t p, struct openat_nocancel_args *uap,
+     int32_t *retval)
+ {
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_path[96];
++		size_t udon_len = 0;
++		if (copyinstr(uap->path, udon_path, sizeof(udon_path) - 1, &udon_len) == 0) {
++			udon_path[sizeof(udon_path) - 1] = 0;
++			if (udon_path_interesting(udon_path)) {
++				char udon_buf[128];
++				snprintf(udon_buf, sizeof(udon_buf), "openat %d %.80s", uap->fd, udon_path);
++				boot_progress_stage(udon_buf);
++			}
++		}
++	}
++#endif
+ 	return openat_internal(vfs_context_current(), uap->path, uap->flags,
+ 	           uap->mode, uap->fd, UIO_USERSPACE, retval);
+ }
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -604,12 +604,70 @@
+ 	return fault_code == FSC_SYNC_PARITY;
+ }
+ 
++/* udon bring-up: synchronous-exception probe for the pid 1 fault storm; the
++ * boot progress kit renders n/pc/far/esr, a 64-entry approximation of distinct
++ * faulted MiB regions, the hottest faulting PC, and the last eight (pc, far)
++ * pairs so a retry loop and forward progress look different on the HUD. */
++volatile uint64_t udon_sync_n, udon_sync_pc, udon_sync_far, udon_sync_esr;
++volatile uint32_t udon_sync_el0, udon_sync_distinct_mb;
++volatile uint64_t udon_sync_mb_top;
++volatile uint32_t udon_sync_mb_top_n;
++volatile uint64_t udon_sync_top_pc;
++volatile uint32_t udon_sync_top_pc_n;
++static uint64_t udon_sync_mb_keys[32];
++static uint32_t udon_sync_mb_hits[32];
++static uint64_t udon_sync_pc_keys[32];
++static uint32_t udon_sync_pc_hits[32];
++volatile uint64_t udon_sync_ring_pc[8], udon_sync_ring_far[8];
++volatile uint64_t udon_sync_lr;
++volatile uint64_t udon_vmfault_n, udon_vmfault_result, udon_vmfault_aborted, udon_vmfault_ok;
++static uint32_t udon_sync_ring_i;
++
+ void
++udon_sync_probe(uint64_t pc, uint64_t lr, uint64_t far_addr, uint32_t esr, unsigned el0)
++{
++	udon_sync_n++;
++	udon_sync_pc = pc;
++	udon_sync_lr = lr;
++	udon_sync_far = far_addr;
++	udon_sync_esr = esr;
++	udon_sync_el0 = el0;
++	unsigned r = udon_sync_ring_i++ & 7;
++	udon_sync_ring_pc[r] = pc;
++	udon_sync_ring_far[r] = far_addr;
++	uint64_t mb = far_addr >> 20;
++	unsigned b = (unsigned)(mb & 31);
++	if (udon_sync_mb_keys[b] != mb) {
++		udon_sync_mb_keys[b] = mb;
++		udon_sync_mb_hits[b] = 0;
++		udon_sync_distinct_mb++;
++	}
++	if (++udon_sync_mb_hits[b] > udon_sync_mb_top_n) {
++		udon_sync_mb_top_n = udon_sync_mb_hits[b];
++		udon_sync_mb_top = mb;
++	}
++	unsigned q = (unsigned)((pc >> 2) & 31);
++	if (udon_sync_pc_keys[q] != pc) {
++		udon_sync_pc_keys[q] = pc;
++		udon_sync_pc_hits[q] = 0;
++	}
++	if (++udon_sync_pc_hits[q] > udon_sync_top_pc_n) {
++		udon_sync_top_pc_n = udon_sync_pc_hits[q];
++		udon_sync_top_pc = pc;
++	}
++}
++
++void
+ sleh_synchronous(arm_context_t *context, uint32_t esr, vm_offset_t far, __unused bool did_initiate_panic_lockdown)
+ {
+ 	esr_exception_class_t  class   = ESR_EC(esr);
+ 	arm_saved_state_t    * state   = &context->ss;
+ 	thread_t               thread  = current_thread();
++	if (class == ESR_EC_DABORT_EL0 || class == ESR_EC_IABORT_EL0) {
++		udon_sync_probe(get_saved_state_pc(state), get_saved_state_lr(state), (uint64_t)far, esr, 1);
++	} else if (class == ESR_EC_DABORT_EL1 || class == ESR_EC_IABORT_EL1) {
++		udon_sync_probe(get_saved_state_pc(state), get_saved_state_lr(state), (uint64_t)far, esr, 0);
++	}
+ #if MACH_ASSERT
+ 	int                    preemption_level = sleh_get_preemption_level();
+ #endif
+@@ -1584,9 +1642,16 @@
+ 		if (thread->t_rr_state.trr_fault_state != TRR_FAULT_NONE) {
+ 			thread_reset_pcs_done_faulting(thread);
+ 		}
+-		if (result == KERN_SUCCESS || result == KERN_ABORTED) {
++		udon_vmfault_n++;
++		udon_vmfault_result = (uint64_t)result;
++		if (result == KERN_ABORTED) {
++			udon_vmfault_aborted++;
+ 			return;
+ 		}
++		if (result == KERN_SUCCESS) {
++			udon_vmfault_ok++;
++			return;
++		}
+ 
+ 		/*
+ 		 * vm_fault() should never return KERN_FAILURE for page faults from user space.

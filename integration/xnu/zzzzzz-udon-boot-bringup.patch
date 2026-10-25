@@ -1,0 +1,15 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -642,7 +642,10 @@
+ 	fdt_init(kernproc);
+ 	kernproc->p_fd.fd_cmask = (mode_t)cmask;
+ 
+-	assert(bsd_simul_execs != 0);
++	/* udon bring-up: the scale chain did not initialize this; keep a usable cache. */
++	if (bsd_simul_execs == 0) {
++		bsd_simul_execs = BSD_SIMUL_EXECS;
++	}
+ 	execargs_cache_size = bsd_simul_execs;
+ 	execargs_free_count = bsd_simul_execs;
+ 	execargs_cache = zalloc_permanent(bsd_simul_execs * sizeof(vm_offset_t),

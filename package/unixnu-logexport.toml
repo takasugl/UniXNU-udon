@@ -1,0 +1,14 @@
+version = 1
+
+[boot]
+timeout = 0
+default = "logexport"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "logexport"
+title = "Udon persistent XNU log export"
+type = "efi"
+path = "Payloads/UdonLogExport.efi"

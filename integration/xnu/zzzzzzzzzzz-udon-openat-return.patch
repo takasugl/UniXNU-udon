@@ -1,0 +1,26 @@
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -5199,5 +5199,21 @@ openat_nocancel(__unused proc_t p, struct openat_nocancel_args *uap,
+ 		}
+ #endif
+-	return openat_internal(vfs_context_current(), uap->path, uap->flags,
+-	           uap->mode, uap->fd, UIO_USERSPACE, retval);
++	int udon_error = openat_internal(vfs_context_current(), uap->path, uap->flags,
++	           uap->mode, uap->fd, UIO_USERSPACE, retval);
++#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
++	{
++		char udon_path[96];
++		size_t udon_len = 0;
++		if (copyinstr(uap->path, udon_path, sizeof(udon_path) - 1, &udon_len) == 0) {
++			udon_path[sizeof(udon_path) - 1] = 0;
++			if (udon_path_interesting(udon_path)) {
++				char udon_buf[144];
++				snprintf(udon_buf, sizeof(udon_buf), "openat ret=%d fd=%d %.70s",
++				    udon_error, uap->fd, udon_path);
++				boot_progress_stage(udon_buf);
++			}
++		}
++	}
++#endif
++	return udon_error;
+ }

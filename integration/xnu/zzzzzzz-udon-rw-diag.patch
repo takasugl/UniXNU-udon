@@ -1,0 +1,13 @@
+diff --git a/osfmk/kern/lock_rw.c b/osfmk/kern/lock_rw.c
+--- a/osfmk/kern/lock_rw.c
++++ b/osfmk/kern/lock_rw.c
+@@ -1397,7 +1397,8 @@
+ 	if (lock->lck_rw_can_sleep) {
+ 		lck_rw_lock_count_inc(thread, lock);
+ 	} else if (get_preemption_level() == 0) {
+-		panic("Taking non-sleepable RW lock with preemption enabled");
++		panic("UDON_RW_NS lock=%p data=0x%08x thread=%p preempt=%d caller=%p",
++		    lock, ordered_load_rw(lock), thread, get_preemption_level(), caller);
+ 	}
+ 
+ 	for (;;) {
