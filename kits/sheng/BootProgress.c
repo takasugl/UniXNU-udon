@@ -88,6 +88,7 @@ extern volatile uint64_t native_ram_block_bytes,native_ram_block_resident_bytes 
 extern unsigned int vm_page_free_min,vm_page_free_reserved,vm_page_free_target;
 extern void boot_progress_exit_fault(int,unsigned,char *,unsigned long) __attribute__((weak_import));
 extern void boot_progress_exit_reason(int,unsigned,char *,unsigned long) __attribute__((weak_import));
+extern void boot_progress_critical_exit(int,char *,unsigned long) __attribute__((weak_import));
 extern void boot_ui_trace_snapshot(unsigned) __attribute__((weak_import));
 extern char boot_ui_trace_rows[14][120] __attribute__((weak_import));
 extern char boot_ui_trace_label[120] __attribute__((weak_import));
@@ -670,7 +671,37 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!started && !state.frozen)draw(now);
   release();
 }
-void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
+static int reason_contains(const char *p,unsigned n,const char *needle) {
+  unsigned m=(unsigned)strlen(needle);
+  for(unsigned i=0;i+m<=n;++i) {
+    unsigned j=0;while(j<m && p[i+j]==needle[j])++j;
+    if(j==m)return 1;
+  }
+  return 0;
+}
+static void exit_reason_text(const char *buf,unsigned size,char *out,unsigned cap) {
+  if(!buf || !size || cap<2)return;
+  unsigned best_rank=0,best_len=0,best_start=0;
+  for(unsigned i=0;i<size;) {
+    while(i<size && (buf[i]<32 || buf[i]>=127))++i;
+    unsigned start=i;
+    while(i<size && buf[i]>=32 && buf[i]<127)++i;
+    unsigned len=i-start;
+    if(len<16)continue;
+    unsigned rank=reason_contains(buf+start,len,"uncaught exception")?3:
+      reason_contains(buf+start,len,"reason: ")?2:
+      reason_contains(buf+start,len,"Terminating")?2:
+      reason_contains(buf+start,len,"exception")?1:0;
+    if(rank>best_rank || (rank==best_rank && len>best_len)) {
+      best_rank=rank;best_len=len;best_start=start;
+    }
+  }
+  if(!best_len)return;
+  unsigned n=best_len<cap-1?best_len:cap-1;
+  memcpy(out,buf+best_start,n);out[n]=0;
+}
+void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code,
+                        const char *reason_buf,unsigned reason_len) {
   if(!enabled)return;
   char crash[400]={0},reason[330]={0};
   unsigned crash_slot=0;
@@ -688,8 +719,11 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
   // map. Both run outside exit_lock so unrelated exits keep their records.
   if(signal>=3 && signal<=12 && signal!=9 && boot_progress_exit_fault)
     boot_progress_exit_fault(pid,signal,crash,sizeof(crash));
+  if(signal==6 && boot_progress_critical_exit)
+    boot_progress_critical_exit(pid,crash,sizeof(crash));
   if(signal==6 && boot_progress_exit_reason)
     boot_progress_exit_reason(pid,signal,reason,sizeof(reason));
+  if(signal==6 && !reason[0])exit_reason_text(reason_buf,reason_len,reason,sizeof(reason));
   if(crash[0] || reason[0]) {
     if(!__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
       if(crash[0] && signal>=3 && signal<=12 && signal!=9)

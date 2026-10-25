@@ -36,10 +36,11 @@ diagnostic timer are all alive. It does not prove that the iPadOS home screen re
 3. Continue toward a complete user interface and then the platform devices listed as
    unsupported in the README.
 
-The current `board.toml` is prepared for a `native-data-010` evidence run. The payload
-was built at 16:28 CST with SHA-256
-`02abfb7392f34fd901f1157f5758a457744a42e42faef373585c17fd65aacbe2`.
-Its hardware result is still pending; `payload.json` continues to say
+The current `board.toml` is prepared for a `native-data-012` evidence run. The payload
+was built at 16:43 CST with SHA-256
+`71bb82bbc1551fcf63be7ceae0121fa2cfd46eb28025856d5ef530c1f1ff28d0`.
+It adds critical user-exit and reason-text capture. Its hardware result is still pending;
+`payload.json` continues to say
 `hardware_tested: false` until a result is recorded explicitly.
 
 ## Evidence discipline
