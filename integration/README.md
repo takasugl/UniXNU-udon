@@ -37,3 +37,9 @@ evidence on another SoC.
 
 The root-auth patch exists only to reach the next bring-up gate. It should not be used
 as a security design.
+
+## Bootstrap
+
+Run `scripts/bootstrap-core.sh <core-checkout>` to create the expected core state
+from the pinned commit. The script applies both patches and copies the Udon
+diagnostic files. It refuses to touch a dirty checkout.

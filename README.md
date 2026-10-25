@@ -75,24 +75,23 @@ Firmware changes live in the companion
 
 ## Build
 
-The current working procedure uses a UniXNU checkout beside this repository:
+The complete host and dependency checklist is in
+[`docs/REPRODUCE.md`](docs/REPRODUCE.md). The short version is:
 
 ```sh
-git clone --recurse-submodules https://github.com/UniXNU/UniXNU.git
-git clone https://github.com/UniXNU/UniXNU-udon.git
-cd UniXNU
+./scripts/bootstrap-core.sh ../UniXNU
+cd ../UniXNU
 ./unixnu fetch -D ../UniXNU-udon
+./unixnu build userdata -D ../UniXNU-udon
 ./unixnu defconfig udon_defconfig -D ../UniXNU-udon
 ./unixnu build kernel -D ../UniXNU-udon
 ```
 
-The experimental root-auth step and trust-cache union are kept under
-`integration/`. They must be copied into the UniXNU checkout before the corresponding
-kernel and payload build:
+The bootstrap step fixes the core and NativeUfs commits, applies the patches in
+`integration/`, and installs the extra Udon tools. The remaining payload steps
+are:
 
 ```sh
-cp ../UniXNU-udon/integration/core/scripts/*.py scripts/
-cp ../UniXNU-udon/integration/xnu/*.patch patches/xnu/
 python3 scripts/udon-patch-root-auth-skip.py out/udon/kernel/kernel.macho
 python3 scripts/build-trustcache-container.py \
   --output out/ipsw/tc-raw/static-system.container \
@@ -100,11 +99,18 @@ python3 scripts/build-trustcache-container.py \
   out/ipsw/tc-raw/system.trustcache
 ./unixnu build payload -D ../UniXNU-udon \
   --unique-chip-id <16-hex-digits> \
-  --trust-cache out/ipsw/tc-raw/static-system.container
+  --trust-cache out/ipsw/tc-raw/static-system.container \
+  --data-ramdisk build/owner-data-fixture/owner-data-32.cdr
 ```
 
 The root-auth patch is a bring-up experiment, not a production security policy. The
 project does not redistribute Apple IPSW contents, firmware blobs or the platform seed.
+
+Run the repository checks with:
+
+```sh
+python3 scripts/check-repository.py
+```
 
 ## Hardware and recovery
 
